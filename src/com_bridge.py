@@ -55,6 +55,19 @@ class MindManagerBridge:
             "central_topic_guid": ct.Guid,
         }
 
+    def open_document(self, file_path: str) -> dict:
+        """Open an existing .mmap document from disk and make it active."""
+        app = self.get_app()
+        app.Visible = True
+        norm_path = os.path.abspath(file_path)
+        self._doc = app.Documents.Open(norm_path)
+        return {
+            "status": "opened",
+            "document_name": self._doc.Name,
+            "path": norm_path,
+            "central_topic": self._doc.CentralTopic.Text,
+        }
+
     def save_active_document(self, file_path: Optional[str] = None) -> dict:
         """Save the active document to disk."""
         doc = self.get_active_doc()

@@ -20,6 +20,12 @@ def create_map(title: str = "AI-Trading Roadmap") -> dict:
 
 
 @mcp.tool
+def open_map(file_path: str) -> dict:
+    """Open an existing .mmap mind map file from disk and make it the active map."""
+    return bridge.open_document(file_path=file_path)
+
+
+@mcp.tool
 def save_map(file_path: Optional[str] = None) -> dict:
     """Save the active MindManager map. If file_path is given, saves as that file (.mmap)."""
     return bridge.save_active_document(file_path=file_path)
