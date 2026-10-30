@@ -2,6 +2,7 @@
 
 from datetime import datetime
 import os
+import re
 import pywintypes
 import win32com.client
 from typing import Any, Optional
@@ -21,30 +22,35 @@ class MindManagerBridge:
 
     def __init__(self):
         self._app = None
+        self._doc = None
 
     def get_app(self):
         """Ensure connection to running MindManager application."""
-        if self._app is None:
-            self._app = win32com.client.Dispatch("Mindmanager.Application")
-            self._app.Visible = True
-        return self._app
+        import pythoncom
+        from win32com.client import gencache
+        pythoncom.CoInitialize()
+        app = gencache.EnsureDispatch("Mindmanager.Application")
+        app.Visible = True
+        return app
 
     def get_active_doc(self):
-        """Return the active document or raise error if none open."""
+        """Return the active document or create one if none open."""
         app = self.get_app()
+        app.Visible = True
         if app.Documents.Count == 0:
-            raise RuntimeError("No document is currently open in MindManager. Create or open one first.")
+            return app.Documents.Add(True)
         return app.ActiveDocument
 
     def create_document(self, title: str = "New Map") -> dict:
         """Create a new MindManager map document with given central topic title."""
         app = self.get_app()
-        doc = app.Documents.Add()
-        ct = doc.CentralTopic
+        app.Visible = True
+        self._doc = app.Documents.Add(True)
+        ct = self._doc.CentralTopic
         ct.Text = title
         return {
             "status": "success",
-            "document_name": doc.Name,
+            "document_name": self._doc.Name,
             "central_topic": ct.Text,
             "central_topic_guid": ct.Guid,
         }
@@ -69,46 +75,35 @@ class MindManagerBridge:
         if not identifier:
             return doc.CentralTopic
 
-        # Try GUID direct lookup first
-        try:
-            topic = doc.FindByGuid(identifier)
-            if topic is not None and getattr(topic, "IsValid", True):
-                return topic
-        except Exception:
-            pass
-
-        # Check central topic text
-        ct = doc.CentralTopic
-        if ct.Text.strip().lower() == identifier.strip().lower():
-            return ct
-
-        # Breadth-first / depth-first search in subtopics
-        def search_topic(curr):
+        # Try GUID direct lookup first if identifier looks like a GUID
+        if re.match(r"^\{?[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\}?$", identifier.strip()):
             try:
-                for sub in curr.AllSubTopics:
-                    if sub.Text.strip().lower() == identifier.strip().lower():
-                        return sub
-                    found = search_topic(sub)
-                    if found:
-                        return found
+                topic = doc.FindByGuid(identifier.strip())
+                if topic is not None and getattr(topic, "IsValid", True):
+                    return topic
             except Exception:
                 pass
-            return None
 
-        found = search_topic(ct)
-        if found:
-            return found
+        clean_target = identifier.replace("\r", "").replace("\n", "").strip().lower()
 
-        # Search floating topics
+        # Breadth-first search across all trees starting from CentralTopic and FloatingTopics
+        queue = [doc.CentralTopic]
         try:
             for ft in doc.FloatingTopics:
-                if ft.Text.strip().lower() == identifier.strip().lower():
-                    return ft
-                found = search_topic(ft)
-                if found:
-                    return found
+                queue.append(ft)
         except Exception:
             pass
+
+        while queue:
+            curr = queue.pop(0)
+            clean_curr = getattr(curr, "Text", "").replace("\r", "").replace("\n", "").strip().lower()
+            if clean_curr == clean_target:
+                return curr
+            try:
+                for child in curr.AllSubTopics:
+                    queue.append(child)
+            except Exception:
+                pass
 
         raise ValueError(f"Topic with identifier '{identifier}' not found in active map.")
 
@@ -127,7 +122,7 @@ class MindManagerBridge:
     ) -> dict:
         """Add a subtopic to a parent topic with optional metadata and styling."""
         parent = self.find_topic(parent_identifier)
-        sub = parent.AddSubtopic(title)
+        sub = getattr(parent, "AddSubTopic", getattr(parent, "AddSubtopic", None))(title)
 
         if notes:
             sub.Notes.Text = notes
@@ -187,7 +182,8 @@ class MindManagerBridge:
     def add_callout(self, topic_identifier: str, text: str) -> dict:
         """Add a callout note (сноска-выноска) attached to a topic."""
         topic = self.find_topic(topic_identifier)
-        callout = topic.CalloutTopics.Add(text)
+        callout = topic.CalloutTopics.Add("")
+        callout.Text = text
         return {
             "status": "created",
             "text": callout.Text,
